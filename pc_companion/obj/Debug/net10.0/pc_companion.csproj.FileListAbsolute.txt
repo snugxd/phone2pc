@@ -1,0 +1,15 @@
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\bin\Debug\net10.0\pc_companion.exe
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\bin\Debug\net10.0\pc_companion.deps.json
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\bin\Debug\net10.0\pc_companion.runtimeconfig.json
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\bin\Debug\net10.0\pc_companion.dll
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\bin\Debug\net10.0\pc_companion.pdb
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\pc_companion.GeneratedMSBuildEditorConfig.editorconfig
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\pc_companion.AssemblyInfoInputs.cache
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\pc_companion.AssemblyInfo.cs
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\pc_companion.csproj.CoreCompileInputs.cache
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\pc_companion.sourcelink.json
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\pc_companion.dll
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\refint\pc_companion.dll
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\pc_companion.pdb
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\pc_companion.genruntimeconfig.cache
+D:\Personal Projects\MouseProj\phone2pc\pc_companion\obj\Debug\net10.0\ref\pc_companion.dll
