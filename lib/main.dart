@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'latency_stats.dart';
+import 'touchpad_gesture.dart';
 
 const _port = 45454;
 
@@ -34,7 +35,7 @@ class MyHomePage extends StatefulWidget {
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
+class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   final _ipController = TextEditingController();
   final _packet = ByteData(13)..setUint8(0, 1);
   late final Uint8List _packetBytes = _packet.buffer.asUint8List();
@@ -55,10 +56,25 @@ class _MyHomePageState extends State<MyHomePage> {
   int _sequence = 0;
   int? _lastSentSequence;
   String _status = 'Opening UDP socket...';
+  final _gesture = TouchpadGesture();
+  final _buttonRetries = <Timer>{};
+  final _clickTimers = <Timer>{};
+  Timer? _pendingTapTimer;
+  Timer? _secondTouchTimer;
+  Timer? _buttonKeepalive;
+  int _buttonSequence = 0;
+  bool _leftHeld = false;
+  InternetAddress? _buttonDestination;
+  AppLifecycleState? _lifecycleState;
+  Duration? _lastPointerAt;
+  Duration? _lastPongAt;
+  bool _socketOpen = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _lifecycleState = WidgetsBinding.instance.lifecycleState;
     _debugLines = ValueNotifier(_debugSummary());
     _displayTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
       _debugLines.value = _debugSummary();
@@ -71,8 +87,19 @@ class _MyHomePageState extends State<MyHomePage> {
     _status,
     _latency.summary,
     'Unanswered pings (1 s timeout): ${_latency.unanswered}',
+    'Debug: lifecycle ${_lifecycleState?.name ?? "unknown"} | '
+        'pointer ${_ageSince(_lastPointerAt)} | '
+        'gesture active ${_gesture.activePointer ?? "none"}, '
+        'pending ${_gesture.pendingTap}, drag ${_gesture.dragHeld} | '
+        'pong ${_ageSince(_lastPongAt)} | socket ${_socketOpen ? "open" : "closed"}',
     ?_latencyError,
   ];
+
+  String _ageSince(Duration? timestamp) {
+    if (timestamp == null) return 'never';
+    final seconds = (_clock.elapsed - timestamp).inMilliseconds / 1000;
+    return '${seconds.toStringAsFixed(1)}s ago';
+  }
 
   Future<void> _openSocket() async {
     try {
@@ -83,11 +110,16 @@ class _MyHomePageState extends State<MyHomePage> {
       }
       socket.writeEventsEnabled = false;
       _socket = socket;
+      _socketOpen = true;
       _socketSubscription = socket.listen(
         _onSocketEvent,
         onError: (Object error) {
           if (!mounted) return;
           _latencyError = 'Ping error: $error';
+        },
+        onDone: () {
+          _socketOpen = false;
+          debugPrint('UDP socket stream closed');
         },
       );
       _pingTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
@@ -139,15 +171,21 @@ class _MyHomePageState extends State<MyHomePage> {
         continue;
       }
       final data = ByteData.sublistView(packet.data);
-      _latency.receive(
+      if (_latency.receive(
         data.getUint32(1, Endian.little),
         data.getInt64(5, Endian.little),
         now,
-      );
+      )) {
+        _lastPongAt = _clock.elapsed;
+      }
     }
   }
 
   void _onPointerMove(PointerMoveEvent event) {
+    _recordPointerEvent();
+    final decision = _gesture.move(event.pointer, event.position);
+    _handleGestureDecision(decision);
+    if (!decision.sendMovement) return;
     _totalX += event.delta.dx * _sensitivity;
     _totalY += event.delta.dy * _sensitivity;
     _sequence = (_sequence + 1) & 0xffffffff;
@@ -175,12 +213,183 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  void _onPointerDown(PointerDownEvent event) {
+    _recordPointerEvent();
+    _handleGestureDecision(
+      _gesture.down(event.pointer, event.position, _clock.elapsed),
+      secondTouchPointer: event.pointer,
+    );
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    _recordPointerEvent();
+    _handleGestureDecision(
+      _gesture.up(event.pointer, event.position, _clock.elapsed),
+    );
+  }
+
+  void _onPointerCancel(PointerCancelEvent event) {
+    _recordPointerEvent();
+    debugPrint('Gesture tracker cancelled pointer ${event.pointer}');
+    _handleGestureDecision(_gesture.cancel(event.pointer));
+  }
+
+  void _recordPointerEvent() {
+    _lastPointerAt = _clock.elapsed;
+  }
+
+  void _handleGestureDecision(
+    GestureDecision decision, {
+    int? secondTouchPointer,
+  }) {
+    for (final action in decision.actions) {
+      switch (action) {
+        case GestureAction.startPendingTap:
+          _pendingTapTimer?.cancel();
+          _pendingTapTimer = Timer(doubleTapWindow, () {
+            _handleGestureDecision(_gesture.expirePendingTap(_clock.elapsed));
+          });
+          break;
+        case GestureAction.startSecondTouchTimer:
+          _pendingTapTimer?.cancel();
+          _secondTouchTimer?.cancel();
+          final pointer = secondTouchPointer;
+          if (pointer != null) {
+            _secondTouchTimer = Timer(
+              tapTime + const Duration(milliseconds: 1),
+              () {
+                _handleGestureDecision(
+                  _gesture.holdElapsed(pointer, _clock.elapsed),
+                );
+              },
+            );
+          }
+          break;
+        case GestureAction.cancelSecondTouchTimer:
+          _secondTouchTimer?.cancel();
+          break;
+        case GestureAction.singleClick:
+          _pendingTapTimer?.cancel();
+          _sendClicks(1);
+          break;
+        case GestureAction.doubleClick:
+          _sendClicks(2);
+          break;
+        case GestureAction.leftDown:
+          _setLeftButton(true);
+          break;
+        case GestureAction.leftUp:
+          _setLeftButton(false);
+          break;
+      }
+    }
+  }
+
+  void _sendClicks(int count) {
+    for (var click = 0; click < count; click++) {
+      final start = Duration(milliseconds: click * 50);
+      _scheduleClickAction(start, () => _setLeftButton(true));
+      _scheduleClickAction(
+        start + const Duration(milliseconds: 10),
+        () => _setLeftButton(false),
+      );
+    }
+  }
+
+  void _scheduleClickAction(Duration delay, void Function() action) {
+    if (delay == Duration.zero) {
+      action();
+      return;
+    }
+    late final Timer timer;
+    timer = Timer(delay, () {
+      _clickTimers.remove(timer);
+      action();
+    });
+    _clickTimers.add(timer);
+  }
+
+  void _setLeftButton(bool down) {
+    if (_leftHeld == down) return;
+    _leftHeld = down;
+    if (down) _buttonDestination ??= _destination;
+    _sendButtonState(down ? 1 : 0);
+    _buttonKeepalive?.cancel();
+    if (down) {
+      _buttonKeepalive = Timer.periodic(const Duration(milliseconds: 200), (_) {
+        _sendButtonState(1);
+      });
+    } else {
+      _buttonDestination = null;
+    }
+  }
+
+  void _sendButtonState(int mask) {
+    final socket = _socket;
+    final destination = _buttonDestination ?? _destination;
+    if (socket == null || destination == null) return;
+    _buttonSequence = (_buttonSequence + 1) & 0xffffffff;
+    final data = ByteData(6)
+      ..setUint8(0, 4)
+      ..setUint32(1, _buttonSequence, Endian.little)
+      ..setUint8(5, mask);
+    final bytes = data.buffer.asUint8List();
+
+    void send() {
+      try {
+        if (socket.send(bytes, destination, _port) != bytes.length) {
+          throw const SocketException('The button state could not be sent.');
+        }
+      } catch (error) {
+        _status = 'Error: $error';
+      }
+    }
+
+    send();
+    for (var repeat = 1; repeat <= 3; repeat++) {
+      late final Timer timer;
+      timer = Timer(Duration(milliseconds: repeat * 10), () {
+        _buttonRetries.remove(timer);
+        send();
+      });
+      _buttonRetries.add(timer);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleState = state;
+    debugPrint('App lifecycle changed to ${state.name}');
+    if (state != AppLifecycleState.resumed) {
+      _resetGestureTracker('lifecycle ${state.name}');
+    }
+  }
+
+  void _resetGestureTracker(String reason) {
+    debugPrint('Gesture tracker reset: $reason');
+    _pendingTapTimer?.cancel();
+    _secondTouchTimer?.cancel();
+    for (final timer in _clickTimers) {
+      timer.cancel();
+    }
+    _clickTimers.clear();
+    _handleGestureDecision(_gesture.reset());
+    if (_leftHeld) _setLeftButton(false);
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _resetGestureTracker('dispose');
+    _buttonKeepalive?.cancel();
+    for (final timer in _buttonRetries) {
+      timer.cancel();
+    }
     _pingTimer?.cancel();
     _displayTimer?.cancel();
     _debugLines.dispose();
     unawaited(_socketSubscription?.cancel());
+    _socketOpen = false;
     _socket?.close();
     _clock.stop();
     _ipController.dispose();
@@ -232,7 +441,10 @@ class _MyHomePageState extends State<MyHomePage> {
                 child: Listener(
                   key: const ValueKey('touchpad'),
                   behavior: HitTestBehavior.opaque,
+                  onPointerDown: _onPointerDown,
                   onPointerMove: _onPointerMove,
+                  onPointerUp: _onPointerUp,
+                  onPointerCancel: _onPointerCancel,
                   child: ColoredBox(
                     color: Theme.of(context)
                         .colorScheme

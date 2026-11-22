@@ -15,3 +15,4 @@ cursor responsiveness.
 - Do not modify working code outside the task.
 - Keep networking off the UI thread; keep the input path lightweight.
 - After each task, explain every file you changed in plain language.
+- You may suggest better approaches or flag risks you notice, in a short "Suggestions" section at the end of your report. Do not implement a suggestion until I approve it.
