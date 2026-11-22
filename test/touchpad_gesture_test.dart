@@ -105,20 +105,105 @@ void main() {
     ]);
   });
 
-  test('Extra fingers cannot change the active gesture', () {
+  test('A third finger is ignored and disqualifies a two-finger tap', () {
     final gesture = TouchpadGesture();
     gesture.down(1, origin, ms(0));
-    expect(gesture.down(2, origin, ms(10)).actions, isEmpty);
+    gesture.down(2, origin, ms(10));
+    expect(gesture.down(3, origin, ms(20)).actions, isEmpty);
     expect(
-      gesture.move(2, origin + const Offset(100, 0)).sendMovement,
-      isFalse,
+      gesture.move(3, origin + const Offset(100, 0)).scrollDelta,
+      Offset.zero,
     );
-    expect(gesture.up(2, origin, ms(20)).actions, isEmpty);
-    expect(gesture.cancel(2).actions, isEmpty);
-    expect(gesture.activePointer, 1);
-    expect(gesture.up(1, origin, ms(100)).actions, [
-      GestureAction.startPendingTap,
+    expect(gesture.up(1, origin, ms(50)).actions, isEmpty);
+    expect(gesture.up(2, origin, ms(60)).actions, isEmpty);
+    expect(gesture.ignoringUntilAllUp, isTrue);
+    gesture.up(3, origin, ms(70));
+    expect(gesture.ignoringUntilAllUp, isFalse);
+    gesture.down(4, origin, ms(80));
+    expect(gesture.activePointer, 4);
+  });
+
+  test('Two-finger tap requests one right click', () {
+    final gesture = TouchpadGesture();
+    gesture.down(1, origin, ms(0));
+    gesture.down(2, origin + const Offset(20, 0), ms(20));
+    expect(gesture.up(1, origin, ms(100)).actions, isEmpty);
+    expect(gesture.up(2, origin + const Offset(20, 0), ms(150)).actions, [
+      GestureAction.rightClick,
     ]);
+    expect(gesture.activePointer, isNull);
+  });
+
+  test('Average two-finger movement enters scroll mode after slop', () {
+    final gesture = TouchpadGesture();
+    gesture.down(1, origin, ms(0));
+    gesture.down(2, origin + const Offset(20, 0), ms(10));
+    final firstMove = gesture.move(1, origin + const Offset(9, 0));
+    expect(firstMove.sendMovement, isFalse);
+    expect(firstMove.scrollDelta, Offset.zero);
+    final secondMove = gesture.move(2, origin + const Offset(29, 0));
+    expect(secondMove.sendMovement, isFalse);
+    expect(secondMove.scrollDelta, const Offset(4.5, 0));
+    expect(gesture.scrolling, isTrue);
+  });
+
+  test(
+    'Natural scroll direction applies sensitivity without reversing axes',
+    () {
+      expect(scrollSensitivity, 3.0);
+      expect(naturalScroll, isTrue);
+      expect(scaleScrollDelta(const Offset(2, -4)), const Offset(6, -12));
+    },
+  );
+
+  test(
+    'Lifting one finger during scroll ignores all input until all are up',
+    () {
+      final gesture = TouchpadGesture();
+      gesture.down(1, origin, ms(0));
+      gesture.down(2, origin + const Offset(20, 0), ms(10));
+      gesture.move(1, origin + const Offset(9, 0));
+      gesture.move(2, origin + const Offset(29, 0));
+      expect(gesture.scrolling, isTrue);
+
+      expect(
+        gesture.up(1, origin + const Offset(9, 0), ms(100)).actions,
+        isEmpty,
+      );
+      expect(gesture.ignoringUntilAllUp, isTrue);
+      expect(
+        gesture.move(2, origin + const Offset(40, 0)).scrollDelta,
+        Offset.zero,
+      );
+      gesture.down(3, origin, ms(110));
+      gesture.up(2, origin + const Offset(40, 0), ms(120));
+      expect(gesture.ignoringUntilAllUp, isTrue);
+      gesture.up(3, origin, ms(130));
+      expect(gesture.ignoringUntilAllUp, isFalse);
+
+      gesture.down(4, origin, ms(140));
+      expect(gesture.activePointer, 4);
+    },
+  );
+
+  test('Two fingers cancel a pending single tap without a left click', () {
+    final gesture = TouchpadGesture();
+    gesture.down(1, origin, ms(0));
+    gesture.up(1, origin, ms(50));
+    expect(gesture.pendingTap, isTrue);
+
+    expect(gesture.down(2, origin, ms(100)).actions, [
+      GestureAction.startSecondTouchTimer,
+    ]);
+    expect(gesture.down(3, origin + const Offset(20, 0), ms(110)).actions, [
+      GestureAction.cancelSecondTouchTimer,
+    ]);
+    expect(gesture.pendingTap, isFalse);
+    expect(gesture.up(2, origin, ms(150)).actions, isEmpty);
+    expect(gesture.up(3, origin + const Offset(20, 0), ms(160)).actions, [
+      GestureAction.rightClick,
+    ]);
+    expect(gesture.expirePendingTap(ms(1000)).actions, isEmpty);
   });
 
   test('Cancellation clears a second-touch candidate and releases a drag', () {

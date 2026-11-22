@@ -39,6 +39,8 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   final _ipController = TextEditingController();
   final _packet = ByteData(13)..setUint8(0, 1);
   late final Uint8List _packetBytes = _packet.buffer.asUint8List();
+  final _scrollPacket = ByteData(13)..setUint8(0, 5);
+  late final Uint8List _scrollPacketBytes = _scrollPacket.buffer.asUint8List();
   RawDatagramSocket? _socket;
   StreamSubscription<RawSocketEvent>? _socketSubscription;
   Timer? _pingTimer;
@@ -52,8 +54,11 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   InternetAddress? _destination;
   double _totalX = 0;
   double _totalY = 0;
+  double _totalScrollH = 0;
+  double _totalScrollV = 0;
   double _sensitivity = 2.5;
   int _sequence = 0;
+  int _scrollSequence = 0;
   int? _lastSentSequence;
   String _status = 'Opening UDP socket...';
   final _gesture = TouchpadGesture();
@@ -63,7 +68,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   Timer? _secondTouchTimer;
   Timer? _buttonKeepalive;
   int _buttonSequence = 0;
-  bool _leftHeld = false;
+  int _buttonMask = 0;
   InternetAddress? _buttonDestination;
   AppLifecycleState? _lifecycleState;
   Duration? _lastPointerAt;
@@ -90,7 +95,8 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     'Debug: lifecycle ${_lifecycleState?.name ?? "unknown"} | '
         'pointer ${_ageSince(_lastPointerAt)} | '
         'gesture active ${_gesture.activePointer ?? "none"}, '
-        'pending ${_gesture.pendingTap}, drag ${_gesture.dragHeld} | '
+        'pending ${_gesture.pendingTap}, drag ${_gesture.dragHeld}, '
+        'scroll ${_gesture.scrolling} | '
         'pong ${_ageSince(_lastPongAt)} | socket ${_socketOpen ? "open" : "closed"}',
     ?_latencyError,
   ];
@@ -185,6 +191,10 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     _recordPointerEvent();
     final decision = _gesture.move(event.pointer, event.position);
     _handleGestureDecision(decision);
+    if (decision.scrollDelta != Offset.zero) {
+      _sendScroll(decision.scrollDelta);
+      return;
+    }
     if (!decision.sendMovement) return;
     _totalX += event.delta.dx * _sensitivity;
     _totalY += event.delta.dy * _sensitivity;
@@ -207,6 +217,42 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
         throw const SocketException('The UDP packet could not be sent.');
       }
       _lastSentSequence = _sequence;
+      _status = 'Ready';
+    } catch (error) {
+      _status = 'Error: $error';
+    }
+  }
+
+  void _sendScroll(Offset averageDelta) {
+    final scaled = scaleScrollDelta(averageDelta);
+    _totalScrollH += scaled.dx;
+    _totalScrollV += scaled.dy;
+    _scrollSequence = (_scrollSequence + 1) & 0xffffffff;
+
+    final destination = _destination;
+    final socket = _socket;
+    if (destination == null) {
+      _status = 'Error: Enter a valid PC IPv4 address.';
+      return;
+    }
+    if (socket == null) return;
+
+    _scrollPacket.setUint32(1, _scrollSequence, Endian.little);
+    _scrollPacket.setInt32(
+      5,
+      _totalScrollH.round().toSigned(32),
+      Endian.little,
+    );
+    _scrollPacket.setInt32(
+      9,
+      _totalScrollV.round().toSigned(32),
+      Endian.little,
+    );
+    try {
+      final sent = socket.send(_scrollPacketBytes, destination, _port);
+      if (sent != _scrollPacketBytes.length) {
+        throw const SocketException('The scroll packet could not be sent.');
+      }
       _status = 'Ready';
     } catch (error) {
       _status = 'Error: $error';
@@ -275,6 +321,9 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
         case GestureAction.doubleClick:
           _sendClicks(2);
           break;
+        case GestureAction.rightClick:
+          _sendClicks(1, buttonMask: 2);
+          break;
         case GestureAction.leftDown:
           _setLeftButton(true);
           break;
@@ -285,13 +334,13 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     }
   }
 
-  void _sendClicks(int count) {
+  void _sendClicks(int count, {int buttonMask = 1}) {
     for (var click = 0; click < count; click++) {
       final start = Duration(milliseconds: click * 50);
-      _scheduleClickAction(start, () => _setLeftButton(true));
+      _scheduleClickAction(start, () => _setButtonMask(buttonMask));
       _scheduleClickAction(
         start + const Duration(milliseconds: 10),
-        () => _setLeftButton(false),
+        () => _setButtonMask(0),
       );
     }
   }
@@ -310,14 +359,18 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   }
 
   void _setLeftButton(bool down) {
-    if (_leftHeld == down) return;
-    _leftHeld = down;
-    if (down) _buttonDestination ??= _destination;
-    _sendButtonState(down ? 1 : 0);
+    _setButtonMask(down ? 1 : 0);
+  }
+
+  void _setButtonMask(int mask) {
+    if (_buttonMask == mask) return;
+    _buttonMask = mask;
+    if (mask != 0) _buttonDestination ??= _destination;
+    _sendButtonState(mask);
     _buttonKeepalive?.cancel();
-    if (down) {
+    if (mask != 0) {
       _buttonKeepalive = Timer.periodic(const Duration(milliseconds: 200), (_) {
-        _sendButtonState(1);
+        _sendButtonState(_buttonMask);
       });
     } else {
       _buttonDestination = null;
@@ -374,7 +427,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     }
     _clickTimers.clear();
     _handleGestureDecision(_gesture.reset());
-    if (_leftHeld) _setLeftButton(false);
+    if (_buttonMask != 0) _setButtonMask(0);
   }
 
   @override
