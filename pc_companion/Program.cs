@@ -17,11 +17,14 @@ Console.CancelKeyPress += (_, e) =>
 
 using var listener = new UdpClient(new IPEndPoint(IPAddress.Any, 45454));
 var senders = new Dictionary<IPEndPoint, SenderState>();
+var scrollSenders = new Dictionary<IPEndPoint, ScrollState>();
 var buttons = new ButtonReceiver();
 EventHandler releaseOnExit = (_, _) => buttons.ReleaseAll();
 AppDomain.CurrentDomain.ProcessExit += releaseOnExit;
 long packetsReceived = 0;
 long sequenceGaps = 0;
+long scrollPacketsReceived = 0;
+long scrollSequenceGaps = 0;
 Task statistics = PrintStatisticsAsync();
 Task buttonSafety = RunButtonSafetyAsync();
 Console.WriteLine("Listening on UDP 45454");
@@ -45,6 +48,31 @@ try
         {
             data[0] = 3;
             await listener.SendAsync(data, packet.RemoteEndPoint, cancellation.Token);
+            continue;
+        }
+        if (data[0] == 5)
+        {
+            Interlocked.Increment(ref scrollPacketsReceived);
+            uint scrollSequence = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(1, 4));
+            int totalH = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(5, 4));
+            int totalV = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(9, 4));
+            var currentScroll = new ScrollState(scrollSequence, totalH, totalV);
+
+            if (!scrollSenders.TryGetValue(packet.RemoteEndPoint, out ScrollState previousScroll))
+            {
+                scrollSenders[packet.RemoteEndPoint] = currentScroll;
+                continue;
+            }
+
+            uint scrollAdvance = unchecked(scrollSequence - previousScroll.Sequence);
+            if (scrollAdvance == 0 || scrollAdvance >= 0x80000000u)
+                continue;
+
+            Interlocked.Add(ref scrollSequenceGaps, (long)scrollAdvance - 1);
+            int dH = (int)Math.Clamp((long)totalH - previousScroll.TotalH, -1200L, 1200L);
+            int dV = (int)Math.Clamp((long)totalV - previousScroll.TotalV, -1200L, 1200L);
+            scrollSenders[packet.RemoteEndPoint] = currentScroll;
+            MouseInput.Scroll(dH, dV);
             continue;
         }
         if (data[0] != 1)
@@ -115,7 +143,10 @@ async Task PrintStatisticsAsync()
         {
             long received = Interlocked.Exchange(ref packetsReceived, 0);
             long gaps = Interlocked.Exchange(ref sequenceGaps, 0);
-            Console.WriteLine($"Packets received: {received}; sequence gaps: {gaps}");
+            long scrollReceived = Interlocked.Exchange(ref scrollPacketsReceived, 0);
+            long scrollGaps = Interlocked.Exchange(ref scrollSequenceGaps, 0);
+            Console.WriteLine($"Packets received: {received}; sequence gaps: {gaps}; " +
+                $"scroll packets: {scrollReceived}; scroll gaps: {scrollGaps}");
         }
     }
     catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -125,3 +156,4 @@ async Task PrintStatisticsAsync()
 }
 
 readonly record struct SenderState(uint Sequence, int TotalX, int TotalY);
+readonly record struct ScrollState(uint Sequence, int TotalH, int TotalV);

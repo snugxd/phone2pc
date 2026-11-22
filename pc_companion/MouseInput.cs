@@ -11,6 +11,8 @@ internal static class MouseInput
     private const uint MouseEventRightUp = 0x0010;
     private const uint MouseEventMiddleDown = 0x0020;
     private const uint MouseEventMiddleUp = 0x0040;
+    private const uint MouseEventWheel = 0x0800;
+    private const uint MouseEventHorizontalWheel = 0x1000;
     private static readonly int InputSize = Marshal.SizeOf<Input>();
 
     internal static void Move(int dx, int dy)
@@ -55,6 +57,32 @@ internal static class MouseInput
         {
             throw new Win32Exception(Marshal.GetLastWin32Error(),
                 "SendInput failed to inject the mouse button state.");
+        }
+    }
+
+    internal static void Scroll(int horizontal, int vertical)
+    {
+        if (vertical != 0)
+            SendWheel(vertical, MouseEventWheel, "vertical");
+        if (horizontal != 0)
+            SendWheel(horizontal, MouseEventHorizontalWheel, "horizontal");
+    }
+
+    private static void SendWheel(int delta, uint flag, string direction)
+    {
+        var input = new Input
+        {
+            Type = InputMouse,
+            Mouse = new NativeMouseInput
+            {
+                MouseData = unchecked((uint)delta),
+                Flags = flag
+            }
+        };
+        if (SendInput(1, ref input, InputSize) != 1)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                $"SendInput failed to inject the {direction} mouse wheel movement.");
         }
     }
 
