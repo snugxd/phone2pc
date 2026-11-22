@@ -1,33 +1,12 @@
-import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
-import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import 'latency_stats.dart';
+
 const _port = 45454;
-
-Future<String> _sendTestPacket(String ip, int sequence) {
-  return Isolate.run(() async {
-    final address = InternetAddress.tryParse(ip);
-    if (address == null || address.type != InternetAddressType.IPv4) {
-      throw const FormatException('Enter a valid PC IPv4 address.');
-    }
-
-    final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-    try {
-      final packet =
-          'PHONE2PC|$sequence|${DateTime.now().millisecondsSinceEpoch}';
-      final bytes = utf8.encode(packet);
-      final sent = socket.send(bytes, address, _port);
-      if (sent != bytes.length) {
-        throw const SocketException('The UDP packet could not be sent.');
-      }
-      return packet;
-    } finally {
-      socket.close();
-    }
-  });
-}
 
 void main() {
   runApp(const MyApp());
@@ -57,31 +36,153 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   final _ipController = TextEditingController();
+  final _packet = ByteData(13)..setUint8(0, 1);
+  late final Uint8List _packetBytes = _packet.buffer.asUint8List();
+  RawDatagramSocket? _socket;
+  StreamSubscription<RawSocketEvent>? _socketSubscription;
+  Timer? _pingTimer;
+  Timer? _displayTimer;
+  late final ValueNotifier<List<String>> _debugLines;
+  final _clock = Stopwatch()..start();
+  final _latency = LatencyStats();
+  final _pingPacket = ByteData(13)..setUint8(0, 2);
+  int _pingId = 0;
+  String? _latencyError;
+  InternetAddress? _destination;
+  double _totalX = 0;
+  double _totalY = 0;
+  double _sensitivity = 2.5;
   int _sequence = 0;
-  bool _sending = false;
-  String _status = 'No packet sent yet.';
+  int? _lastSentSequence;
+  String _status = 'Opening UDP socket...';
 
-  Future<void> _send() async {
-    final ip = _ipController.text.trim();
-    final sequence = ++_sequence;
-    setState(() => _sending = true);
+  @override
+  void initState() {
+    super.initState();
+    _debugLines = ValueNotifier(_debugSummary());
+    _displayTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      _debugLines.value = _debugSummary();
+    });
+    _openSocket();
+  }
 
+  List<String> _debugSummary() => [
+    'Sequence sent: ${_lastSentSequence ?? "none"}',
+    _status,
+    _latency.summary,
+    'Unanswered pings (1 s timeout): ${_latency.unanswered}',
+    ?_latencyError,
+  ];
+
+  Future<void> _openSocket() async {
     try {
-      final packet = await _sendTestPacket(ip, sequence);
-      if (!mounted) return;
-      setState(() => _status = 'Last packet sent: $packet');
+      final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      if (!mounted) {
+        socket.close();
+        return;
+      }
+      socket.writeEventsEnabled = false;
+      _socket = socket;
+      _socketSubscription = socket.listen(
+        _onSocketEvent,
+        onError: (Object error) {
+          if (!mounted) return;
+          _latencyError = 'Ping error: $error';
+        },
+      );
+      _pingTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+        _latency.expire(_clock.elapsedMicroseconds);
+        _sendPing();
+      });
+      _status = 'Ready';
     } catch (error) {
       if (!mounted) return;
-      setState(() => _status = 'Error: $error');
-    } finally {
-      if (mounted) {
-        setState(() => _sending = false);
+      _status = 'Error: $error';
+    }
+  }
+
+  void _updateDestination(String value) {
+    final address = InternetAddress.tryParse(value.trim());
+    _destination = address?.type == InternetAddressType.IPv4 ? address : null;
+  }
+
+  void _sendPing() {
+    final socket = _socket;
+    final destination = _destination;
+    if (socket == null || destination == null) return;
+    _pingId = (_pingId + 1) & 0xffffffff;
+    final timestamp = _clock.elapsedMicroseconds;
+    _pingPacket.setUint32(1, _pingId, Endian.little);
+    _pingPacket.setInt64(5, timestamp, Endian.little);
+    final bytes = _pingPacket.buffer.asUint8List();
+    try {
+      if (socket.send(bytes, destination, _port) != bytes.length) {
+        throw const SocketException('The ping could not be sent.');
       }
+      _latency.sent(_pingId, timestamp);
+      _latencyError = null;
+    } catch (error) {
+      _latencyError = 'Ping error: $error';
+    }
+  }
+
+  void _onSocketEvent(RawSocketEvent event) {
+    if (event != RawSocketEvent.read) return;
+    Datagram? datagram;
+    while ((datagram = _socket?.receive()) != null) {
+      final packet = datagram!;
+      final now = _clock.elapsedMicroseconds;
+      if (packet.address != _destination ||
+          packet.port != _port ||
+          packet.data.length != 13 ||
+          packet.data[0] != 3) {
+        continue;
+      }
+      final data = ByteData.sublistView(packet.data);
+      _latency.receive(
+        data.getUint32(1, Endian.little),
+        data.getInt64(5, Endian.little),
+        now,
+      );
+    }
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    _totalX += event.delta.dx * _sensitivity;
+    _totalY += event.delta.dy * _sensitivity;
+    _sequence = (_sequence + 1) & 0xffffffff;
+
+    final destination = _destination;
+    final socket = _socket;
+    if (destination == null) {
+      _status = 'Error: Enter a valid PC IPv4 address.';
+      return;
+    }
+    if (socket == null) return;
+
+    _packet.setUint32(1, _sequence, Endian.little);
+    _packet.setInt32(5, _totalX.round().toSigned(32), Endian.little);
+    _packet.setInt32(9, _totalY.round().toSigned(32), Endian.little);
+    try {
+      final sent = socket.send(_packetBytes, destination, _port);
+      if (sent != _packetBytes.length) {
+        throw const SocketException('The UDP packet could not be sent.');
+      }
+      _lastSentSequence = _sequence;
+      _status = 'Ready';
+    } catch (error) {
+      _status = 'Error: $error';
     }
   }
 
   @override
   void dispose() {
+    _pingTimer?.cancel();
+    _displayTimer?.cancel();
+    _debugLines.dispose();
+    unawaited(_socketSubscription?.cancel());
+    _socket?.close();
+    _clock.stop();
     _ipController.dispose();
     super.dispose();
   }
@@ -91,14 +192,17 @@ class _MyHomePageState extends State<MyHomePage> {
     return Scaffold(
       appBar: AppBar(title: const Text('Phone2PC')),
       body: SafeArea(
-        child: SingleChildScrollView(
+        child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               TextField(
                 controller: _ipController,
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                onChanged: _updateDestination,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
                 autocorrect: false,
                 decoration: const InputDecoration(
                   labelText: 'PC IP address',
@@ -107,13 +211,38 @@ class _MyHomePageState extends State<MyHomePage> {
               ),
               const SizedBox(height: 12),
               const Text('Port: 45454'),
-              const SizedBox(height: 12),
-              ElevatedButton(
-                onPressed: _sending ? null : _send,
-                child: const Text('Send test packet'),
+              Text('Sensitivity: ${_sensitivity.toStringAsFixed(1)}'),
+              Slider(
+                value: _sensitivity,
+                min: 0.5,
+                max: 6.0,
+                divisions: 55,
+                label: _sensitivity.toStringAsFixed(1),
+                onChanged: (value) => setState(() => _sensitivity = value),
+              ),
+              ValueListenableBuilder<List<String>>(
+                valueListenable: _debugLines,
+                builder: (context, lines, child) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [for (final line in lines) Text(line)],
+                ),
               ),
               const SizedBox(height: 12),
-              Text(_status),
+              Expanded(
+                child: Listener(
+                  key: const ValueKey('touchpad'),
+                  behavior: HitTestBehavior.opaque,
+                  onPointerMove: _onPointerMove,
+                  child: ColoredBox(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .surfaceContainerHighest,
+                    child: const Center(
+                      child: Text('Slide to move the cursor'),
+                    ),
+                  ),
+                ),
+              ),
             ],
           ),
         ),
