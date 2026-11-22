@@ -5,6 +5,12 @@ internal static class MouseInput
 {
     private const uint InputMouse = 0;
     private const uint MouseEventMove = 0x0001;
+    private const uint MouseEventLeftDown = 0x0002;
+    private const uint MouseEventLeftUp = 0x0004;
+    private const uint MouseEventRightDown = 0x0008;
+    private const uint MouseEventRightUp = 0x0010;
+    private const uint MouseEventMiddleDown = 0x0020;
+    private const uint MouseEventMiddleUp = 0x0040;
     private static readonly int InputSize = Marshal.SizeOf<Input>();
 
     internal static void Move(int dx, int dy)
@@ -24,6 +30,31 @@ internal static class MouseInput
         {
             throw new Win32Exception(Marshal.GetLastWin32Error(),
                 "SendInput failed to inject the mouse movement.");
+        }
+    }
+
+    internal static void SetButtons(byte previous, byte current)
+    {
+        int changed = previous ^ current;
+        uint flags = 0;
+        if ((changed & 1) != 0)
+            flags |= (current & 1) != 0 ? MouseEventLeftDown : MouseEventLeftUp;
+        if ((changed & 2) != 0)
+            flags |= (current & 2) != 0 ? MouseEventRightDown : MouseEventRightUp;
+        if ((changed & 4) != 0)
+            flags |= (current & 4) != 0 ? MouseEventMiddleDown : MouseEventMiddleUp;
+        if (flags == 0)
+            return;
+
+        var input = new Input
+        {
+            Type = InputMouse,
+            Mouse = new NativeMouseInput { Flags = flags }
+        };
+        if (SendInput(1, ref input, InputSize) != 1)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "SendInput failed to inject the mouse button state.");
         }
     }
 

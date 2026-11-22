@@ -17,9 +17,13 @@ Console.CancelKeyPress += (_, e) =>
 
 using var listener = new UdpClient(new IPEndPoint(IPAddress.Any, 45454));
 var senders = new Dictionary<IPEndPoint, SenderState>();
+var buttons = new ButtonReceiver();
+EventHandler releaseOnExit = (_, _) => buttons.ReleaseAll();
+AppDomain.CurrentDomain.ProcessExit += releaseOnExit;
 long packetsReceived = 0;
 long sequenceGaps = 0;
 Task statistics = PrintStatisticsAsync();
+Task buttonSafety = RunButtonSafetyAsync();
 Console.WriteLine("Listening on UDP 45454");
 
 try
@@ -29,6 +33,12 @@ try
         UdpReceiveResult packet = await listener.ReceiveAsync(cancellation.Token);
         Interlocked.Increment(ref packetsReceived);
         byte[] data = packet.Buffer;
+        if (data.Length == 6 && data[0] == 4)
+        {
+            buttons.Receive(packet.RemoteEndPoint,
+                BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(1, 4)), data[5]);
+            continue;
+        }
         if (data.Length != 13)
             continue;
         if (data[0] == 2)
@@ -71,7 +81,29 @@ catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
 finally
 {
     cancellation.Cancel();
-    await statistics;
+    try
+    {
+        await Task.WhenAll(statistics, buttonSafety);
+    }
+    finally
+    {
+        buttons.ReleaseAll();
+        AppDomain.CurrentDomain.ProcessExit -= releaseOnExit;
+    }
+}
+
+async Task RunButtonSafetyAsync()
+{
+    try
+    {
+        await buttons.RunTimeoutsAsync(cancellation.Token);
+    }
+    catch
+    {
+        // Do not leave the receiver running without its button-release watchdog.
+        cancellation.Cancel();
+        throw;
+    }
 }
 
 async Task PrintStatisticsAsync()

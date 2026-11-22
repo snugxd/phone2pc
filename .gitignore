@@ -46,3 +46,10 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# C# companion build output
+pc_companion/bin/
+pc_companion/obj/
+
+# Android Kotlin cache
+android/.kotlin/
