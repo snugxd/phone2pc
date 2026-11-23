@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'latency_stats.dart';
+import 'scroll_accumulator.dart';
 import 'touchpad_gesture.dart';
 
 const _port = 45454;
@@ -54,8 +55,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   InternetAddress? _destination;
   double _totalX = 0;
   double _totalY = 0;
-  double _totalScrollH = 0;
-  double _totalScrollV = 0;
+  final _scrollAccumulator = ScrollAccumulator();
   double _sensitivity = 2.5;
   int _sequence = 0;
   int _scrollSequence = 0;
@@ -189,7 +189,11 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
 
   void _onPointerMove(PointerMoveEvent event) {
     _recordPointerEvent();
-    final decision = _gesture.move(event.pointer, event.position);
+    final decision = _gesture.move(
+      event.pointer,
+      event.position,
+      delta: event.delta,
+    );
     _handleGestureDecision(decision);
     if (decision.scrollDelta != Offset.zero) {
       _sendScroll(decision.scrollDelta);
@@ -224,9 +228,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   }
 
   void _sendScroll(Offset averageDelta) {
-    final scaled = scaleScrollDelta(averageDelta);
-    _totalScrollH += scaled.dx;
-    _totalScrollV += scaled.dy;
+    final totals = _scrollAccumulator.add(averageDelta);
     _scrollSequence = (_scrollSequence + 1) & 0xffffffff;
 
     final destination = _destination;
@@ -238,16 +240,8 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     if (socket == null) return;
 
     _scrollPacket.setUint32(1, _scrollSequence, Endian.little);
-    _scrollPacket.setInt32(
-      5,
-      _totalScrollH.round().toSigned(32),
-      Endian.little,
-    );
-    _scrollPacket.setInt32(
-      9,
-      _totalScrollV.round().toSigned(32),
-      Endian.little,
-    );
+    _scrollPacket.setInt32(5, totals.horizontal, Endian.little);
+    _scrollPacket.setInt32(9, totals.vertical, Endian.little);
     try {
       final sent = socket.send(_scrollPacketBytes, destination, _port);
       if (sent != _scrollPacketBytes.length) {

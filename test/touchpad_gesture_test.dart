@@ -150,11 +150,50 @@ void main() {
   test(
     'Natural scroll direction applies sensitivity without reversing axes',
     () {
-      expect(scrollSensitivity, 3.0);
+      expect(scrollSensitivity, 6.0);
       expect(naturalScroll, isTrue);
-      expect(scaleScrollDelta(const Offset(2, -4)), const Offset(6, -12));
+      expect(scaleScrollDelta(const Offset(2, -4)), const Offset(12, -24));
     },
   );
+
+  test('Second finger must land within the 300 ms join window', () {
+    expect(twoFingerJoinTime, const Duration(milliseconds: 300));
+
+    final accepted = TouchpadGesture();
+    accepted.down(1, origin, ms(0));
+    accepted.down(2, origin + const Offset(20, 0), ms(300));
+    expect(
+      accepted.move(2, origin + const Offset(40, 0)).scrollDelta,
+      const Offset(10, 0),
+    );
+
+    final late = TouchpadGesture();
+    late.down(1, origin, ms(0));
+    late.down(2, origin + const Offset(20, 0), ms(301));
+    expect(late.move(2, origin + const Offset(40, 0)).scrollDelta, Offset.zero);
+
+    final rightClickWithinJoinTime = TouchpadGesture();
+    rightClickWithinJoinTime.down(1, origin, ms(0));
+    rightClickWithinJoinTime.down(2, origin + const Offset(20, 0), ms(220));
+    expect(rightClickWithinJoinTime.up(1, origin, ms(260)).actions, isEmpty);
+    expect(
+      rightClickWithinJoinTime
+          .up(2, origin + const Offset(20, 0), ms(300))
+          .actions,
+      [GestureAction.rightClick],
+    );
+
+    final rightClickAfterJoinTime = TouchpadGesture();
+    rightClickAfterJoinTime.down(1, origin, ms(0));
+    rightClickAfterJoinTime.down(2, origin + const Offset(20, 0), ms(250));
+    expect(rightClickAfterJoinTime.up(1, origin, ms(280)).actions, isEmpty);
+    expect(
+      rightClickAfterJoinTime
+          .up(2, origin + const Offset(20, 0), ms(301))
+          .actions,
+      isEmpty,
+    );
+  });
 
   test(
     'Lifting one finger during scroll ignores all input until all are up',

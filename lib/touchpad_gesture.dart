@@ -3,7 +3,8 @@ import 'dart:ui';
 const movementSlop = 8.0;
 const tapTime = Duration(milliseconds: 200);
 const doubleTapWindow = Duration(milliseconds: 250);
-const scrollSensitivity = 3.0;
+const twoFingerJoinTime = Duration(milliseconds: 300);
+const scrollSensitivity = 6.0;
 const naturalScroll = true;
 
 Offset scaleScrollDelta(Offset averageDelta) {
@@ -84,7 +85,10 @@ class TouchpadGesture {
       return GestureDecision(actions: actions);
     }
 
-    if (_secondPointer == null && pointer != _activePointer && !_dragHeld) {
+    if (_secondPointer == null &&
+        pointer != _activePointer &&
+        !_dragHeld &&
+        now - _landedAt <= twoFingerJoinTime) {
       final actions = <GestureAction>[];
       if (_secondTouch) {
         actions.add(GestureAction.cancelSecondTouchTimer);
@@ -96,7 +100,7 @@ class TouchpadGesture {
       _scrolling = false;
       _twoFingerFinishing = false;
       _twoFingerLifted.clear();
-      _twoFingerTapEligible = !_moved && now - _landedAt <= tapTime;
+      _twoFingerTapEligible = !_moved;
       return GestureDecision(actions: actions);
     }
 
@@ -105,9 +109,11 @@ class TouchpadGesture {
     return const GestureDecision();
   }
 
-  GestureDecision move(int pointer, Offset position) {
+  GestureDecision move(int pointer, Offset position, {Offset? delta}) {
     if (_ignoreUntilAllUp) return const GestureDecision();
-    if (_secondPointer != null) return _moveTwoFinger(pointer, position);
+    if (_secondPointer != null) {
+      return _moveTwoFinger(pointer, position, delta: delta);
+    }
     if (_activePointer != pointer) return const GestureDecision();
 
     _position = position;
@@ -127,7 +133,11 @@ class TouchpadGesture {
     return GestureDecision(sendMovement: _moved, actions: actions);
   }
 
-  GestureDecision _moveTwoFinger(int pointer, Offset position) {
+  GestureDecision _moveTwoFinger(
+    int pointer,
+    Offset position, {
+    Offset? delta,
+  }) {
     if (pointer != _activePointer && pointer != _secondPointer) {
       return const GestureDecision();
     }
@@ -155,7 +165,7 @@ class TouchpadGesture {
       _twoFingerTapEligible = false;
     }
     if (!_scrolling) return const GestureDecision();
-    return GestureDecision(scrollDelta: (position - previous) / 2);
+    return GestureDecision(scrollDelta: (delta ?? position - previous) / 2);
   }
 
   GestureDecision holdElapsed(int pointer, Duration now) {
@@ -213,7 +223,9 @@ class TouchpadGesture {
     _moveTwoFinger(pointer, position);
     _downPointers.remove(pointer);
     _twoFingerLifted.add(pointer);
-    if (now - _landedAt > tapTime) _twoFingerTapEligible = false;
+    if (now - _landedAt > twoFingerJoinTime) {
+      _twoFingerTapEligible = false;
+    }
 
     if (_scrolling) {
       _clearTwoFingerTouch();

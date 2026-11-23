@@ -25,6 +25,9 @@ long packetsReceived = 0;
 long sequenceGaps = 0;
 long scrollPacketsReceived = 0;
 long scrollSequenceGaps = 0;
+long scrollClampedPackets = 0;
+long scrollVerticalRequested = 0;
+long scrollVerticalInjected = 0;
 Task statistics = PrintStatisticsAsync();
 Task buttonSafety = RunButtonSafetyAsync();
 Console.WriteLine("Listening on UDP 45454");
@@ -69,8 +72,17 @@ try
                 continue;
 
             Interlocked.Add(ref scrollSequenceGaps, (long)scrollAdvance - 1);
-            int dH = (int)Math.Clamp((long)totalH - previousScroll.TotalH, -1200L, 1200L);
-            int dV = (int)Math.Clamp((long)totalV - previousScroll.TotalV, -1200L, 1200L);
+            long requestedH = (long)totalH - previousScroll.TotalH;
+            long requestedV = (long)totalV - previousScroll.TotalV;
+            int dH = (int)Math.Clamp(requestedH, -1200L, 1200L);
+            int dV = (int)Math.Clamp(requestedV, -1200L, 1200L);
+            if (requestedH < -1200L || requestedH > 1200L ||
+                requestedV < -1200L || requestedV > 1200L)
+            {
+                Interlocked.Increment(ref scrollClampedPackets);
+            }
+            Interlocked.Add(ref scrollVerticalRequested, requestedV);
+            Interlocked.Add(ref scrollVerticalInjected, dV);
             scrollSenders[packet.RemoteEndPoint] = currentScroll;
             MouseInput.Scroll(dH, dV);
             continue;
@@ -145,8 +157,13 @@ async Task PrintStatisticsAsync()
             long gaps = Interlocked.Exchange(ref sequenceGaps, 0);
             long scrollReceived = Interlocked.Exchange(ref scrollPacketsReceived, 0);
             long scrollGaps = Interlocked.Exchange(ref scrollSequenceGaps, 0);
+            long clamped = Interlocked.Exchange(ref scrollClampedPackets, 0);
+            long verticalRequested = Interlocked.Exchange(ref scrollVerticalRequested, 0);
+            long verticalInjected = Interlocked.Exchange(ref scrollVerticalInjected, 0);
             Console.WriteLine($"Packets received: {received}; sequence gaps: {gaps}; " +
-                $"scroll packets: {scrollReceived}; scroll gaps: {scrollGaps}");
+                $"scroll packets: {scrollReceived}; scroll gaps: {scrollGaps}; " +
+                $"scroll clamped: {clamped}; vertical requested: {verticalRequested}; " +
+                $"vertical injected: {verticalInjected}");
         }
     }
     catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
