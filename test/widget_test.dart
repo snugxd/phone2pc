@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:phone2pc/main.dart';
+import 'package:phone2pc/app.dart';
 
 void main() {
   testWidgets('Touchpad gates movement and reports invalid IP', (tester) async {
